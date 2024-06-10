@@ -4,6 +4,7 @@
 
 #include "drake/geometry/optimization/graph_of_convex_sets.h"
 
+#include <future>
 #include <limits>
 #include <memory>
 #include <string>
@@ -1613,7 +1614,60 @@ MathematicalProgramResult GraphOfConvexSets::SolveConvexRestriction(
   return result;
 }
 
-MathematicalProgramResult GraphOfConvexSets::SolveConvexRestrictions(
+MathematicalProgramResult GraphOfConvexSets::SolveEdgeList(
+    const std::vector<const Edge*>& edge_list,
+    std::map<EdgeId, std::unique_ptr<Edge>> edges,
+    const GraphOfConvexSetsOptions& restriction_options) {
+  MathematicalProgram prog;
+  std::set<const Vertex*, VertexIdComparator> vertices;
+
+  for (const auto* e : edge_list) {
+    if (!edges.contains(e->id())) {
+      throw std::runtime_error(
+          fmt::format("Edge {} is not in the graph.", e->name()));
+    }
+    vertices.emplace(&e->u());
+    vertices.emplace(&e->v());
+  }
+
+  for (const auto* v : vertices) {
+    if (v->set().ambient_dimension() == 0) {
+      continue;
+    }
+    prog.AddDecisionVariables(v->x());
+    v->set().AddPointInSetConstraints(&prog, v->x());
+
+    // Vertex costs.
+    for (const Binding<Cost>& b : v->costs_) {
+      prog.AddCost(b);
+    }
+    // Vertex constraints.
+    for (const auto& [b, transcriptions] : v->constraints_) {
+      if (transcriptions.contains(Transcription::kRestriction)) {
+        prog.AddConstraint(b);
+      }
+    }
+  }
+
+  for (const auto* e : edge_list) {
+    // Edge costs.
+    for (const Binding<Cost>& b : e->costs_) {
+      prog.AddCost(b);
+    }
+    // Edge constraints.
+    for (const auto& [b, transcriptions] : e->constraints_) {
+      if (transcriptions.contains(Transcription::kRestriction)) {
+        prog.AddConstraint(b);
+      }
+    }
+  }
+
+  RewriteForConvexSolver(&prog);
+  return Solve(prog, restriction_options);
+}
+
+std::vector<MathematicalProgramResult>
+GraphOfConvexSets::SolveConvexRestrictions(
     const std::vector<const std::vector<const Edge*>>& active_edges,
     const GraphOfConvexSetsOptions& options) const {
   // Use the restriction solver and options if they are provided.
@@ -1625,57 +1679,27 @@ MathematicalProgramResult GraphOfConvexSets::SolveConvexRestrictions(
     restriction_options.solver_options =
         *restriction_options.restriction_solver_options;
   }
-  MathematicalProgram prog;
 
-  // Build one big convex program, which the solver might be able to parallelize
+  // Vector to hold futures.
+  std::vector<std::future<MathematicalProgramResult>> futures;
+
+  // Thread pool to parallelize the task.
+  std::vector<std::thread> threads;
+
+  // Launch tasks in parallel.
   for (const auto& edge_list : active_edges) {
-    std::set<const Vertex*, VertexIdComparator> vertices;
-    for (const auto* e : edge_list) {
-      if (!edges_.contains(e->id())) {
-        throw std::runtime_error(
-            fmt::format("Edge {} is not in the graph.", e->name()));
-      }
-      vertices.emplace(&e->u());
-      vertices.emplace(&e->v());
-    }
-
-    for (const auto* v : vertices) {
-      if (v->set().ambient_dimension() == 0) {
-        continue;
-      }
-      prog.AddDecisionVariables(v->x());
-      v->set().AddPointInSetConstraints(&prog, v->x());
-
-      // Vertex costs.
-      for (const Binding<Cost>& b : v->costs_) {
-        prog.AddCost(b);
-      }
-      // Vertex constraints.
-      for (const auto& [b, transcriptions] : v->constraints_) {
-        if (transcriptions.contains(Transcription::kRestriction)) {
-          prog.AddConstraint(b);
-        }
-      }
-    }
-
-    for (const auto* e : edge_list) {
-      // Edge costs.
-      for (const Binding<Cost>& b : e->costs_) {
-        prog.AddCost(b);
-      }
-      // Edge constraints.
-      for (const auto& [b, transcriptions] : e->constraints_) {
-        if (transcriptions.contains(Transcription::kRestriction)) {
-          prog.AddConstraint(b);
-        }
-      }
-    }
+    futures.push_back(std::async(std::launch::async, SolveEdgeList, edge_list,
+                                 std::cref(edges_),
+                                 std::cref(restriction_options)));
   }
 
-  RewriteForConvexSolver(&prog);
-  MathematicalProgramResult result = Solve(prog, restriction_options);
+  // Collect the results.
+  std::vector<MathematicalProgramResult> results;
+  for (auto& future : futures) {
+    results.push_back(future.get());
+  }
 
-  return result;
+  return results;
 }
 
 }  // namespace optimization

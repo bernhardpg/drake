@@ -625,6 +625,11 @@ class GraphOfConvexSets {
       const solvers::MathematicalProgramResult& result,
       double tolerance = 1e-3) const;
 
+  static solvers::MathematicalProgramResult SolveEdgeList(
+      const std::vector<const Edge*>& edge_list,
+      std::map<EdgeId, std::unique_ptr<Edge>> edges,
+      const GraphOfConvexSetsOptions& restriction_options);
+
   /** The non-convexity in a GCS problem comes from the binary variables (phi)
   associated with the edges being active or inactive in the solution. If those
   binary variables are fixed, then the problem is convex -- this is a so-called
@@ -639,12 +644,13 @@ class GraphOfConvexSets {
   Note that one can specify additional non-convex constraints, which may be
   not supported by all solvers. In this case, the provided solver will throw
   an exception.*/
+
   solvers::MathematicalProgramResult SolveConvexRestriction(
       const std::vector<const Edge*>& active_edges,
       const GraphOfConvexSetsOptions& options =
           GraphOfConvexSetsOptions()) const;
 
-  solvers::MathematicalProgramResult SolveConvexRestrictions(
+  std::vector<solvers::MathematicalProgramResult> SolveConvexRestrictions(
       const std::vector<const std::vector<const Edge*>>& active_edges,
       const GraphOfConvexSetsOptions& options =
           GraphOfConvexSetsOptions()) const;
