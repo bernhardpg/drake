@@ -1569,6 +1569,45 @@ MathematicalProgramResult GraphOfConvexSets::SolveShortestPath(
               // ∑ y_u - y_uv - z_vu ∈ (∑ ϕ_u,out - ϕ_uv - ϕ_vu) X_u
               v->set().AddPointInNonnegativeScalingConstraints(
                   &prog, A_yz, VectorXd::Zero(n_v), a, 0, yz_out, phi_out);
+              // The vertex constraints, in perspective form, on the point
+              // A_yz yz_out with the scaling a phi_out, through the new
+              // variables x_two_cycle = A_yz yz_out and
+              // phi_two_cycle = a phi_out.
+              std::unordered_map<Variable, Variable, std::hash<Variable>,
+                                 Variable::CompareEqualTo>
+                  x_to_x_two_cycle;
+              Variable phi_two_cycle;
+              for (const auto& [b, transcriptions] : v->constraints_) {
+                if (!IncludesCurrentTranscription(transcriptions)) {
+                  continue;
+                }
+                if (x_to_x_two_cycle.empty()) {
+                  const VectorXDecisionVariable x_two_cycle =
+                      prog.NewContinuousVariables(n_v, "x_two_cycle");
+                  for (int jj = 0; jj < n_v; ++jj) {
+                    x_to_x_two_cycle.emplace(v->x()[jj], x_two_cycle[jj]);
+                  }
+                  phi_two_cycle =
+                      prog.NewContinuousVariables<1>("phi_two_cycle")[0];
+                  MatrixXd A_x(n_v, A_yz.cols() + n_v);
+                  A_x << A_yz, -MatrixXd::Identity(n_v, n_v);
+                  prog.AddLinearEqualityConstraint(A_x, VectorXd::Zero(n_v),
+                                                   {yz_out, x_two_cycle});
+                  RowVectorXd a_phi(a.size() + 1);
+                  a_phi << a, -1.0;
+                  prog.AddLinearEqualityConstraint(
+                      a_phi, Vector1d::Zero(),
+                      {phi_out, Vector1<Variable>(phi_two_cycle)});
+                }
+                const VectorXDecisionVariable& old_vars = b.variables();
+                VectorXDecisionVariable vars(old_vars.size() + 1);
+                // vars = [phi_two_cycle; x_two_cycle entries for old_vars]
+                vars[0] = phi_two_cycle;
+                for (int ii = 0; ii < old_vars.size(); ++ii) {
+                  vars[ii + 1] = x_to_x_two_cycle.at(old_vars[ii]);
+                }
+                AddPerspectiveConstraint(&prog, b, vars);
+              }
 
               a[i] = 1.0;
               phi_out[i] = *options.convex_relaxation
@@ -1616,12 +1655,16 @@ MathematicalProgramResult GraphOfConvexSets::SolveShortestPath(
       }
     }
 
-    // Vertex constraints.
+    // Vertex constraints, in perspective form, on z_e for every incoming edge e
+    // and on y_e for every outgoing edge e.
+    std::vector<const Edge*> incident_edges(incoming.begin(), incoming.end());
+    incident_edges.insert(incident_edges.end(), outgoing.begin(),
+                          outgoing.end());
     for (const auto& [b, transcriptions] : v->constraints_) {
       if (IncludesCurrentTranscription(transcriptions)) {
         const VectorXDecisionVariable& old_vars = b.variables();
 
-        for (const Edge* e : cost_edges) {
+        for (const Edge* e : incident_edges) {
           VectorXDecisionVariable vars(old_vars.size() + 1);
           // vars = [phi; yz_vars]
           if (*options.convex_relaxation) {
