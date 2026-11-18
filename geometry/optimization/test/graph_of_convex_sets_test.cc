@@ -2394,6 +2394,90 @@ GTEST_TEST(ShortestPathTest, TwoStepLoopConstraint) {
   EXPECT_EQ(non_zero_edges, 6);
 }
 
+// Checks that the convex relaxation imposes a vertex constraint on z_e for
+// every incoming edge e. The graph has two parallel edges a and b from s to v
+// and an edge c from v to t. The set of v is [-1, 1], the variable x of v has
+// the constraint x <= 0, and edge a has the cost -x. If x <= 0 were imposed
+// only on y_c, the relaxation could reach the cost -0.5 instead of 0, with
+// ϕ_a = ϕ_b = 0.5, z_a = 0.5, z_b = -0.5 and y_c = 0.
+GTEST_TEST(ShortestPathTest, VertexConstraintOnIncomingEdges) {
+  GraphOfConvexSets g;
+  Vertex* s = g.AddVertex(Point(Vector1d(0.0)), "s");
+  Vertex* v =
+      g.AddVertex(HPolyhedron::MakeBox(Vector1d(-1.0), Vector1d(1.0)), "v");
+  Vertex* t = g.AddVertex(Point(Vector1d(0.0)), "t");
+  v->AddConstraint(v->x()[0] <= 0.0);
+  Edge* a = g.AddEdge(s, v, "a");
+  g.AddEdge(s, v, "b");
+  g.AddEdge(v, t, "c");
+  a->AddCost(-a->xv()[0]);
+
+  GraphOfConvexSetsOptions options;
+  options.convex_relaxation = true;
+  options.preprocessing = false;
+  options.max_rounded_paths = 0;
+  auto result = g.SolveShortestPath(*s, *t, options);
+  ASSERT_TRUE(result.is_success());
+  EXPECT_NEAR(result.get_optimal_cost(), 0.0, 1e-6);
+  EXPECT_LE(a->GetSolutionPhiXv(result).value()[0], 1e-6);
+
+  if (!MixedIntegerSolverAvailable()) {
+    return;
+  }
+  options.convex_relaxation = false;
+  auto result2 = g.SolveShortestPath(*s, *t, options);
+  ASSERT_TRUE(result2.is_success());
+  EXPECT_NEAR(result2.get_optimal_cost(), 0.0, 1e-6);
+}
+
+// Checks that the convex relaxation imposes the constraints of v in the
+// two-cycle spatial constraint at v. The graph has edges s -> u, s -> v,
+// u -> v, v -> u, u -> t and v -> t. The sets of u and v are [-1, 1], and the
+// variable x_v of v has the constraint x_v <= 0. The edges u -> v, v -> u,
+// u -> t and v -> t have the costs x_v, x_u + 1, 1 and 1 - x_v. Every path
+// costs at least 1. If x_v <= 0 were left out of the two-cycle spatial
+// constraint at v, the relaxation could reach the cost 2/3, with
+// ϕ_su = ϕ_uv = ϕ_vu = ϕ_ut = 1/3, ϕ_sv = ϕ_vt = 2/3,
+// z_uv = y_vu = z_vu = y_ut = -1/3 and every other y and z equal to 0. The
+// two-cycle spatial constraint at v then has the point y_vt - z_uv = 1/3 with
+// the scaling ϕ_vt - ϕ_uv = 1/3, which breaks x_v <= 0.
+GTEST_TEST(ShortestPathTest, VertexConstraintInTwoCycleSpatialConstraint) {
+  GraphOfConvexSets g;
+  Vertex* s = g.AddVertex(Point(Vector1d(0.0)), "s");
+  Vertex* u =
+      g.AddVertex(HPolyhedron::MakeBox(Vector1d(-1.0), Vector1d(1.0)), "u");
+  Vertex* v =
+      g.AddVertex(HPolyhedron::MakeBox(Vector1d(-1.0), Vector1d(1.0)), "v");
+  Vertex* t = g.AddVertex(Point(Vector1d(0.0)), "t");
+  v->AddConstraint(v->x()[0] <= 0.0);
+  g.AddEdge(s, u);
+  g.AddEdge(s, v);
+  Edge* uv = g.AddEdge(u, v);
+  Edge* vu = g.AddEdge(v, u);
+  Edge* ut = g.AddEdge(u, t);
+  Edge* vt = g.AddEdge(v, t);
+  uv->AddCost(uv->xv()[0]);
+  vu->AddCost(vu->xv()[0] + 1.0);
+  ut->AddCost(1.0);
+  vt->AddCost(1.0 - vt->xu()[0]);
+
+  GraphOfConvexSetsOptions options;
+  options.convex_relaxation = true;
+  options.preprocessing = false;
+  options.max_rounded_paths = 0;
+  auto result = g.SolveShortestPath(*s, *t, options);
+  ASSERT_TRUE(result.is_success());
+  EXPECT_NEAR(result.get_optimal_cost(), 1.0, 1e-6);
+
+  if (!MixedIntegerSolverAvailable()) {
+    return;
+  }
+  options.convex_relaxation = false;
+  auto result2 = g.SolveShortestPath(*s, *t, options);
+  ASSERT_TRUE(result2.is_success());
+  EXPECT_NEAR(result2.get_optimal_cost(), 1.0, 1e-6);
+}
+
 // Tests that all optimization variables are properly set, even when constrained
 // to be on or off.
 //            ┌──┐
